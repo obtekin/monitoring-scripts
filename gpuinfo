@@ -1,0 +1,60 @@
+#!/bin/bash
+
+# Use partition argument if given; otherwise process all partitions
+if [ -n "$1" ]; then
+    PARTITIONS=("$1")
+else
+    PARTITIONS=($(sinfo -h -o "%P" | tr -d '*'))
+fi
+
+printf "%-15s %-15s %-25s %-20s %-15s %-20s\n" \
+    "Partition" "Node" "GPU Type" "Available/Total GPUs" "CPUS(A/I/O/T)" "Available/Total Memory"
+
+for PARTITION in "${PARTITIONS[@]}"; do
+    # CPU/memory info
+    sinfo_data=$(sinfo -N -p "$PARTITION" -O nodehost,cpusstate,allocmem --noheader)
+
+    # Node ranges
+    node_ranges=$(scontrol show partition "$PARTITION" | grep -oP 'Nodes=\K\S+')
+    all_nodes=()
+
+    for range in $node_ranges; do
+        # Skip invalid keywords or pure numbers
+        if [[ "$range" =~ ^(ALL|UNLIMITED|[0-9]+)$ ]]; then
+            continue
+        fi
+
+        # Expand hostnames
+        expanded_nodes=$(scontrol show hostnames "$range")
+        all_nodes+=($expanded_nodes)
+    done
+
+    for node in "${all_nodes[@]}"; do
+        # GPU info
+        gpu_info=$(scontrol show node "$node" | grep -oP 'Gres=gpu:[^: ]+' | sed 's/Gres=//')
+        gpu_info=${gpu_info:-none}
+
+        # Total GPUs
+        total_gpus=$(scontrol show node "$node" | grep -oP 'Gres=gpu:[^:]+:\K[0-9]+')
+        total_gpus=${total_gpus:-0}
+
+        # Allocated GPUs
+        allocated_gpus=$(squeue --noheader --nodelist="$node" -o "%b" \
+            | grep -oP 'gpu:[0-9]+' | cut -d: -f2 | awk '{sum+=$1} END{print sum}')
+        allocated_gpus=${allocated_gpus:-0}
+
+        # Available GPUs
+        available_gpus=$((total_gpus - allocated_gpus))
+
+        # CPU info
+        cpu_info=$(echo "$sinfo_data" | awk -v n="$node" '$1==n {print $2}')
+
+        # Memory info
+        total_memory=$(scontrol show node "$node" | grep -oP 'RealMemory=\K[0-9]+')
+        free_memory=$(scontrol show node "$node" | grep -oP 'FreeMem=\K[0-9]+')
+        available_memory="$free_memory/$total_memory"
+
+        printf "%-15s %-15s %-25s %-20s %-15s %-20s\n" \
+            "$PARTITION" "$node" "$gpu_info" "$available_gpus/$total_gpus" "$cpu_info" "$available_memory"
+    done
+done
