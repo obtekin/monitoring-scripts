@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+
+set -u
+set -o pipefail
+
+if [ "$#" -ne 1 ]; then
+  echo "Usage: $0 <user@host>"
+  exit 1
+fi
+
+REMOTE_HOST="$1"
+
+ssh -o BatchMode=yes -o ConnectTimeout=10 "$REMOTE_HOST" 'bash -s' <<'REMOTE_SCRIPT'
+set -u
+set -o pipefail
+
+if ! command -v nvidia-smi >/dev/null 2>&1; then
+  echo "ERROR: nvidia-smi not found on remote host"
+  exit 2
+fi
+
+GPU_COUNT=$(nvidia-smi --query-gpu=count --format=csv,noheader 2>/dev/null | head -n 1)
+
+if [ -z "$GPU_COUNT" ] || ! [[ "$GPU_COUNT" =~ ^[0-9]+$ ]]; then
+  GPU_COUNT=$(nvidia-smi -L 2>/dev/null | wc -l | awk "{print \$1}")
+fi
+
+if [ -z "$GPU_COUNT" ] || [ "$GPU_COUNT" -eq 0 ]; then
+  echo "No GPUs found on remote host"
+  exit 0
+fi
+
+echo "Remote host: $(hostname)"
+echo "GPU uncorrectable memory error report"
+echo "Generated at: $(date)"
+echo
+
+printf "%-8s %-30s %-20s %-20s\n" "GPU" "NAME" "VOLATILE_UE" "AGGREGATE_UE"
+printf "%-8s %-30s %-20s %-20s\n" "--------" "------------------------------" "--------------------" "--------------------"
+
+for ((i=0; i<GPU_COUNT; i++)); do
+  NAME=$(nvidia-smi --query-gpu=name --id="$i" --format=csv,noheader,nounits 2>/dev/null | head -n 1)
+  VOLATILE=$(nvidia-smi --query-gpu=ecc.errors.uncorrected.volatile.total --id="$i" --format=csv,noheader,nounits 2>/dev/null | head -n 1)
+  AGGREGATE=$(nvidia-smi --query-gpu=ecc.errors.uncorrected.aggregate.total --id="$i" --format=csv,noheader,nounits 2>/dev/null | head -n 1)
+
+  [ -z "$NAME" ] && NAME="unknown"
+  [ -z "$VOLATILE" ] && VOLATILE="N A"
+  [ -z "$AGGREGATE" ] && AGGREGATE="N A"
+
+  printf "%-8s %-30s %-20s %-20s\n" "$i" "$NAME" "$VOLATILE" "$AGGREGATE"
+done
+REMOTE_SCRIPT
